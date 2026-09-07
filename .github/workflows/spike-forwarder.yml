@@ -1,0 +1,31 @@
+name: Voltage Spike Forwarder
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  forward:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_CONSUMER_GROUP: "$Default"
+      DURATION_SECONDS: "60"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -q -r forwarder/requirements.txt
+
+      - name: Forward voltage spike events to EH-target
+        env:
+          SOURCE_CONNECTION_STRING: ${{ secrets.FABRIC_ENDPOINT_CONNECTION_STRING }}
+          TARGET_CONNECTION_STRING: ${{ secrets.EHTARGET_SEND_CONNECTION_STRING }}
+        run: python forwarder/forwarder.py
