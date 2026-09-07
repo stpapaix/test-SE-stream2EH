@@ -60,9 +60,7 @@ jobs:
             echo "Connection already exists: $EXISTING"
             echo "CONNECTION_ID=$EXISTING" >> "$GITHUB_ENV"
           else
-            RESPONSE=$(curl -sf -X POST -H "Authorization: Bearer $FABRIC_TOKEN" -H "Content-Type: application/json" \
-              "https://api.fabric.microsoft.com/v1/connections" \
-              -d @- <<EOF
+            cat > connection-request.json <<EOF
           {
             "connectivityType": "ShareableCloud",
             "displayName": "eh-source-connection",
@@ -87,9 +85,17 @@ jobs:
             }
           }
           EOF
-            )
-            echo "$RESPONSE" | jq 'del(.credentialDetails)'
-            CONNECTION_ID=$(echo "$RESPONSE" | jq -r '.id')
+            HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $FABRIC_TOKEN" -H "Content-Type: application/json" \
+              "https://api.fabric.microsoft.com/v1/connections" \
+              -d @connection-request.json)
+            echo "HTTP status: $HTTP_STATUS"
+            cat response.json | jq . || cat response.json
+            if [ "$HTTP_STATUS" -ge 400 ]; then
+              echo "::error::Connection creation failed with status $HTTP_STATUS"
+              exit 1
+            fi
+            CONNECTION_ID=$(jq -r '.id' response.json)
             echo "CONNECTION_ID=$CONNECTION_ID" >> "$GITHUB_ENV"
           fi
 
@@ -152,6 +158,13 @@ jobs:
           }
           EOF
 
-          curl -sf -X POST -H "Authorization: Bearer $FABRIC_TOKEN" -H "Content-Type: application/json" \
+          HTTP_STATUS=$(curl -s -o update-response.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $FABRIC_TOKEN" -H "Content-Type: application/json" \
             "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/eventstreams/${EVENTSTREAM_ID}/updateDefinition" \
-            -d @update-request.json -i
+            -d @update-request.json)
+          echo "HTTP status: $HTTP_STATUS"
+          cat update-response.json | jq . || cat update-response.json
+          if [ "$HTTP_STATUS" -ge 400 ]; then
+            echo "::error::updateDefinition failed with status $HTTP_STATUS"
+            exit 1
+          fi
