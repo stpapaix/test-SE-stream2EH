@@ -8,6 +8,9 @@ param namespaceName string = 'ehns-test-se-stream2eh-${uniqueString(resourceGrou
 @description('Event Hub entity name (the "hub" producers send to / consumers read from)')
 param eventHubName string = 'EH-source'
 
+@description('Event Hub entity name for filtered/processed messages sent out from the Eventstream')
+param targetEventHubName string = 'EH-target'
+
 @description('Consumer group name dedicated to the Fabric Eventstream reader')
 param fabricConsumerGroupName string = 'fabric-eventstream-cg'
 
@@ -21,6 +24,7 @@ resource eventHubNamespace 'Microsoft.EventHub/namespaces@2024-01-01' = {
   }
   properties: {
     isAutoInflateEnabled: false
+    disableLocalAuth: false
   }
 }
 
@@ -38,7 +42,17 @@ resource fabricConsumerGroup 'Microsoft.EventHub/namespaces/eventhubs/consumergr
   name: fabricConsumerGroupName
 }
 
+resource targetEventHub 'Microsoft.EventHub/namespaces/eventhubs@2024-01-01' = {
+  parent: eventHubNamespace
+  name: targetEventHubName
+  properties: {
+    messageRetentionInDays: 1
+    partitionCount: 2
+  }
+}
+
 output namespaceName string = eventHubNamespace.name
 output namespaceHostName string = '${eventHubNamespace.name}.servicebus.windows.net'
 output eventHubName string = eventHub.name
+output targetEventHubName string = targetEventHub.name
 output fabricConsumerGroupName string = fabricConsumerGroup.name
