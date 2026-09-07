@@ -20,14 +20,20 @@ forwarded_count = 0
 
 
 def _get_body_bytes(event) -> bytes:
-    """Extract the raw body as bytes, working across azure-eventhub SDK versions."""
+    """Extract the raw body as bytes, working across azure-eventhub SDK versions.
+
+    Some messages (e.g. connection-test probes) carry an empty/None body,
+    which surfaces as a None chunk in the body generator/list.
+    """
     if hasattr(event, "body_as_bytes"):
         raw = event.body_as_bytes()
     else:
         raw = event.body
+    if raw is None:
+        return b""
     if isinstance(raw, (bytes, bytearray)):
         return bytes(raw)
-    return b"".join(raw)
+    return b"".join(chunk for chunk in raw if chunk is not None)
 
 
 def _on_event(producer: EventHubProducerClient, partition_context, event):
