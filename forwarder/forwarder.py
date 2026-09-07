@@ -21,7 +21,7 @@ forwarded_count = 0
 def _on_event(producer: EventHubProducerClient, partition_context, event):
     global forwarded_count
     batch = producer.create_batch()
-    batch.add(EventData(event.body_as_bytes()))
+    batch.add(EventData(b"".join(event.body_as_bytes())))
     producer.send_batch(batch)
     forwarded_count += 1
     print(f"Forwarded event #{forwarded_count} (partition {partition_context.partition_id})")
