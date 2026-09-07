@@ -8,6 +8,7 @@ Usage (env vars):
   DURATION_SECONDS           how long to consume/forward per run (default: 60)
   LOOKBACK_MINUTES           how far back to look for events not yet seen (default: 20)
 """
+import json
 import os
 import threading
 import time
@@ -20,11 +21,22 @@ forwarded_count = 0
 
 def _on_event(producer: EventHubProducerClient, partition_context, event):
     global forwarded_count
+    raw = b"".join(event.body_as_bytes())
     batch = producer.create_batch()
-    batch.add(EventData(b"".join(event.body_as_bytes())))
+    batch.add(EventData(raw))
     producer.send_batch(batch)
     forwarded_count += 1
-    print(f"Forwarded event #{forwarded_count} (partition {partition_context.partition_id})")
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        summary = json.dumps(payload)
+    except Exception:
+        summary = raw.decode("utf-8", errors="replace")
+
+    print(
+        f"::notice::Forwarded event #{forwarded_count} to EH-target "
+        f"(partition {partition_context.partition_id}, seq {event.sequence_number}): {summary}"
+    )
     partition_context.update_checkpoint(event)
 
 
