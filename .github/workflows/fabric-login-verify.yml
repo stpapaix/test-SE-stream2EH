@@ -1,0 +1,31 @@
+name: Fabric OIDC Login Verify
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  verify-fabric-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get Fabric-scoped access token
+        run: |
+          FABRIC_TOKEN=$(az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv)
+          echo "::add-mask::$FABRIC_TOKEN"
+          echo "FABRIC_TOKEN=$FABRIC_TOKEN" >> "$GITHUB_ENV"
+
+      - name: List workspace items (verify auth)
+        run: |
+          curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/items"
