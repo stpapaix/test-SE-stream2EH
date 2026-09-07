@@ -6,10 +6,12 @@ Usage (env vars):
   SOURCE_CONSUMER_GROUP      consumer group on the custom endpoint (default: $Default)
   TARGET_CONNECTION_STRING   connection string for EH-target (fabric-send-policy)
   DURATION_SECONDS           how long to consume/forward per run (default: 60)
+  LOOKBACK_MINUTES           how far back to look for events not yet seen (default: 20)
 """
 import os
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 from azure.eventhub import EventData, EventHubConsumerClient, EventHubProducerClient
 
@@ -31,13 +33,15 @@ def main() -> None:
     source_consumer_group = os.environ.get("SOURCE_CONSUMER_GROUP", "$Default")
     target_connection_string = os.environ["TARGET_CONNECTION_STRING"]
     duration_seconds = int(os.environ.get("DURATION_SECONDS", "60"))
+    lookback_minutes = int(os.environ.get("LOOKBACK_MINUTES", "20"))
+    starting_position = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
 
     producer = EventHubProducerClient.from_connection_string(target_connection_string)
     consumer = EventHubConsumerClient.from_connection_string(
         source_connection_string, consumer_group=source_consumer_group
     )
 
-    print(f"Consuming from custom endpoint for {duration_seconds}s, forwarding to EH-target...")
+    print(f"Consuming from custom endpoint for {duration_seconds}s (lookback {lookback_minutes}m), forwarding to EH-target...")
 
     def stop_after_duration():
         time.sleep(duration_seconds)
@@ -50,7 +54,7 @@ def main() -> None:
     try:
         consumer.receive(
             on_event=lambda partition_context, event: _on_event(producer, partition_context, event),
-            starting_position="-1",  # only new events from now on
+            starting_position=starting_position,
         )
     except Exception as exc:  # noqa: BLE001 - consumer.close() during receive raises, that's expected
         print(f"Consumer stopped: {exc}")
