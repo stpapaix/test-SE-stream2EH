@@ -37,14 +37,37 @@ jobs:
           if [ -n "$WS_SP_ID" ]; then
             echo "Workspace identity already provisioned: $WS_SP_ID"
           else
-            HTTP_STATUS=$(curl -s -o provision-response.json -w "%{http_code}" -X POST \
+            HTTP_STATUS=$(curl -s -D provision-headers.txt -o provision-response.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $FABRIC_TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Content-Length: 0" \
+              --data-raw "" \
               "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/provisionIdentity")
             echo "HTTP status: $HTTP_STATUS"
             cat provision-response.json | jq . || cat provision-response.json
             if [ "$HTTP_STATUS" -ge 400 ]; then
               echo "::error::provisionIdentity failed with status $HTTP_STATUS"
               exit 1
+            fi
+            if [ "$HTTP_STATUS" = "202" ]; then
+              # Long-running operation: poll the operation URL until it succeeds
+              OP_URL=$(grep -i '^location:' provision-headers.txt | sed 's/^[Ll]ocation: //I' | tr -d '\r')
+              echo "Polling LRO: $OP_URL"
+              for i in $(seq 1 15); do
+                sleep 3
+                OP_STATUS_JSON=$(curl -s -H "Authorization: Bearer $FABRIC_TOKEN" "$OP_URL")
+                OP_STATE=$(echo "$OP_STATUS_JSON" | jq -r '.status')
+                echo "Operation status: $OP_STATE"
+                if [ "$OP_STATE" = "Succeeded" ]; then
+                  curl -s -H "Authorization: Bearer $FABRIC_TOKEN" "$OP_URL/result" -o provision-response.json
+                  cat provision-response.json | jq . || cat provision-response.json
+                  break
+                elif [ "$OP_STATE" = "Failed" ]; then
+                  echo "::error::provisionIdentity operation failed"
+                  echo "$OP_STATUS_JSON" | jq .
+                  exit 1
+                fi
+              done
             fi
             WS_SP_ID=$(jq -r '.servicePrincipalId' provision-response.json)
           fi
