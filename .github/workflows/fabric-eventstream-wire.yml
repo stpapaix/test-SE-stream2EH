@@ -40,6 +40,32 @@ jobs:
           echo "::add-mask::$SAS_KEY"
           echo "SAS_KEY=$SAS_KEY" >> "$GITHUB_ENV"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify SAS credentials work directly against Event Hub (diagnostic)
+        run: |
+          pip install -q azure-eventhub
+          python3 - <<'PYEOF'
+          import os
+          from azure.eventhub import EventHubConsumerClient
+
+          namespace = os.environ["NAMESPACE_NAME"]
+          eventhub_name = os.environ["EVENTHUB_NAME"]
+          policy = os.environ["SAS_POLICY_NAME"]
+          key = os.environ["SAS_KEY"]
+          conn_str = f"Endpoint=sb://{namespace}.servicebus.windows.net/;SharedAccessKeyName={policy};SharedAccessKey={key};EntityPath={eventhub_name}"
+
+          client = EventHubConsumerClient.from_connection_string(conn_str, consumer_group="$Default")
+          try:
+              props = client.get_eventhub_properties()
+              print("SUCCESS: SAS credentials are valid.")
+              print(props)
+          finally:
+              client.close()
+          PYEOF
+
       - name: Resolve Eventstream and KQL Database item IDs
         run: |
           ITEMS=$(curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
