@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # ---- Parameters ----
-SUBSCRIPTION_ID="ac94ffc0-ccd7-43e8-bf7b-288760e0f960"
-APP_NAME="my-app-gh-stpa-deploy"
-RESOURCE_GROUP="test-SE-stream2EH"
-GITHUB_OWNER="stpapaix"
-GITHUB_REPO="test-SE-stream2EH"
+SUBSCRIPTION_ID="<subscription-id>"
+APP_NAME="<app-registration-name>"
+RESOURCE_GROUP="<resource-group-name>"
+GITHUB_OWNER="<github-owner>"
+GITHUB_REPO="<github-repo>"
 BRANCH="main"   # change if deploying from a different branch
 
 # ---- Set active subscription ----
