@@ -51,6 +51,16 @@ resource targetEventHub 'Microsoft.EventHub/namespaces/eventhubs@2024-01-01' = {
   }
 }
 
+resource targetEventHubSendRule 'Microsoft.EventHub/namespaces/eventhubs/authorizationRules@2024-01-01' = {
+  parent: targetEventHub
+  name: 'fabric-send-policy'
+  properties: {
+    rights: [
+      'Send'
+    ]
+  }
+}
+
 output namespaceName string = eventHubNamespace.name
 output namespaceHostName string = '${eventHubNamespace.name}.servicebus.windows.net'
 output eventHubName string = eventHub.name
