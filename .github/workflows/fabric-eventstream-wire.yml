@@ -29,42 +29,27 @@ jobs:
           echo "::add-mask::$FABRIC_TOKEN"
           echo "FABRIC_TOKEN=$FABRIC_TOKEN" >> "$GITHUB_ENV"
 
-      - name: Get Event Hub Listen SAS key
+      - name: Provision (or reuse) the Fabric workspace identity
         run: |
-          SAS_KEY=$(az eventhubs eventhub authorization-rule keys list \
-            --resource-group "$RESOURCE_GROUP" \
-            --namespace-name "$NAMESPACE_NAME" \
-            --eventhub-name "$EVENTHUB_NAME" \
-            --name "$SAS_POLICY_NAME" \
-            --query primaryKey -o tsv)
-          echo "::add-mask::$SAS_KEY"
-          echo "SAS_KEY=$SAS_KEY" >> "$GITHUB_ENV"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Verify SAS credentials work directly against Event Hub (diagnostic)
-        run: |
-          pip install -q azure-eventhub
-          python3 - <<'PYEOF'
-          import os
-          from azure.eventhub import EventHubConsumerClient
-
-          namespace = os.environ["NAMESPACE_NAME"]
-          eventhub_name = os.environ["EVENTHUB_NAME"]
-          policy = os.environ["SAS_POLICY_NAME"]
-          key = os.environ["SAS_KEY"]
-          conn_str = f"Endpoint=sb://{namespace}.servicebus.windows.net/;SharedAccessKeyName={policy};SharedAccessKey={key};EntityPath={eventhub_name}"
-
-          client = EventHubConsumerClient.from_connection_string(conn_str, consumer_group="$Default")
-          try:
-              props = client.get_eventhub_properties()
-              print("SUCCESS: SAS credentials are valid.")
-              print(props)
-          finally:
-              client.close()
-          PYEOF
+          WS=$(curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}")
+          WS_SP_ID=$(echo "$WS" | jq -r '.workspaceIdentity.servicePrincipalId // empty')
+          if [ -n "$WS_SP_ID" ]; then
+            echo "Workspace identity already provisioned: $WS_SP_ID"
+          else
+            HTTP_STATUS=$(curl -s -o provision-response.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $FABRIC_TOKEN" \
+              "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/provisionIdentity")
+            echo "HTTP status: $HTTP_STATUS"
+            cat provision-response.json | jq . || cat provision-response.json
+            if [ "$HTTP_STATUS" -ge 400 ]; then
+              echo "::error::provisionIdentity failed with status $HTTP_STATUS"
+              exit 1
+            fi
+            WS_SP_ID=$(jq -r '.servicePrincipalId' provision-response.json)
+          fi
+          echo "WS_SP_ID=$WS_SP_ID" >> "$GITHUB_ENV"
+          echo "::notice::Workspace identity servicePrincipalId=$WS_SP_ID (needs Azure Event Hubs Data Receiver role on the namespace)"
 
       - name: Resolve Eventstream and KQL Database item IDs
         run: |
@@ -104,9 +89,7 @@ jobs:
               "connectionEncryption": "NotEncrypted",
               "skipTestConnection": false,
               "credentials": {
-                "credentialType": "Basic",
-                "username": "${SAS_POLICY_NAME}",
-                "password": "${SAS_KEY}"
+                "credentialType": "WorkspaceIdentity"
               }
             }
           }
