@@ -24,10 +24,9 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy Event Hub namespace + entity + RBAC
+      - name: Deploy Event Hub namespace + entity
         run: |
           az deployment group create \
             --resource-group test-SE-stream2EH \
             --template-file infra/eventhub.bicep \
-            --parameters senderPrincipalId=${{ vars.AZURE_SP_OBJECT_ID }} \
             --query "properties.outputs" -o json

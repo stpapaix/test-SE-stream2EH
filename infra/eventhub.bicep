@@ -8,9 +8,6 @@ param namespaceName string = 'ehns-test-se-stream2eh-${uniqueString(resourceGrou
 @description('Event Hub entity name (the "hub" producers send to / consumers read from)')
 param eventHubName string = 'EH-source'
 
-@description('Object ID of the service principal that needs to send events')
-param senderPrincipalId string
-
 @description('Consumer group name dedicated to the Fabric Eventstream reader')
 param fabricConsumerGroupName string = 'fabric-eventstream-cg'
 
@@ -39,19 +36,6 @@ resource eventHub 'Microsoft.EventHub/namespaces/eventhubs@2024-01-01' = {
 resource fabricConsumerGroup 'Microsoft.EventHub/namespaces/eventhubs/consumergroups@2024-01-01' = {
   parent: eventHub
   name: fabricConsumerGroupName
-}
-
-// Built-in role: Azure Event Hubs Data Sender
-var dataSenderRoleId = '2b629674-e913-4c01-ae53-ef4638d8f975'
-
-resource senderRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(eventHubNamespace.id, senderPrincipalId, dataSenderRoleId)
-  scope: eventHubNamespace
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', dataSenderRoleId)
-    principalId: senderPrincipalId
-    principalType: 'ServicePrincipal'
-  }
 }
 
 output namespaceName string = eventHubNamespace.name
