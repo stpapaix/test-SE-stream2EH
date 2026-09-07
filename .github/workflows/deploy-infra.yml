@@ -1,0 +1,33 @@
+name: Deploy Event Hub Infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/deploy-infra.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-eventhub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Event Hub namespace + entity + RBAC
+        run: |
+          az deployment group create \
+            --resource-group test-SE-stream2EH \
+            --template-file infra/eventhub.bicep \
+            --parameters senderPrincipalId=${{ vars.AZURE_SP_OBJECT_ID }} \
+            --query "properties.outputs" -o json

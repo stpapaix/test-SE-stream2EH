@@ -1,0 +1,59 @@
+name: Provision Fabric Items
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fabric-provision.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  provision-fabric-items:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get Fabric-scoped access token
+        run: |
+          FABRIC_TOKEN=$(az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv)
+          echo "::add-mask::$FABRIC_TOKEN"
+          echo "FABRIC_TOKEN=$FABRIC_TOKEN" >> "$GITHUB_ENV"
+
+      - name: Create Eventhouse db4ehab (idempotent)
+        run: |
+          EXISTING=$(curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/eventhouses" \
+            | jq -r '.value[] | select(.displayName=="db4ehab") | .id')
+          if [ -n "$EXISTING" ]; then
+            echo "Eventhouse db4ehab already exists: $EXISTING"
+          else
+            curl -sf -X POST -H "Authorization: Bearer $FABRIC_TOKEN" -H "Content-Type: application/json" \
+              -d '{"displayName": "db4ehab"}' \
+              "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/eventhouses"
+          fi
+
+      - name: Create Eventstream stream4ehab (idempotent)
+        run: |
+          EXISTING=$(curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/eventstreams" \
+            | jq -r '.value[] | select(.displayName=="stream4ehab") | .id')
+          if [ -n "$EXISTING" ]; then
+            echo "Eventstream stream4ehab already exists: $EXISTING"
+          else
+            curl -sf -X POST -H "Authorization: Bearer $FABRIC_TOKEN" -H "Content-Type: application/json" \
+              -d '{"displayName": "stream4ehab"}' \
+              "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/eventstreams"
+          fi
+
+      - name: List created items
+        run: |
+          curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/items" | jq .

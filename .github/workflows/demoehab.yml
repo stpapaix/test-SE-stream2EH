@@ -1,0 +1,42 @@
+name: demoehab
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 minutes
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: 'How long to stream events for (seconds)'
+        default: '300'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  stream-energy-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install dependencies
+        run: pip install -r app_generator/requirements.txt
+
+      - name: Run App_generator
+        env:
+          EVENTHUB_NAMESPACE: ${{ vars.EVENTHUB_NAMESPACE }}
+          EVENTHUB_NAME: ${{ vars.EVENTHUB_NAME }}
+          DURATION_SECONDS: ${{ github.event.inputs.duration_seconds || '300' }}
+          INTERVAL_SECONDS: '5'
+          BATCH_SIZE: '10'
+        run: python app_generator/generator.py
