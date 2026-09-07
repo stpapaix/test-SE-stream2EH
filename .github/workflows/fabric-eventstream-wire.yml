@@ -2,6 +2,11 @@ name: Fabric Eventstream Auto-Wire
 
 on:
   workflow_dispatch:
+    inputs:
+      force_deprovision:
+        description: "Deprovision the (failed) workspace identity and exit. Use this after waiting 1 hour following a 'Failed to create workspace identity' error, per Microsoft's documented remediation."
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -29,7 +34,42 @@ jobs:
           echo "::add-mask::$FABRIC_TOKEN"
           echo "FABRIC_TOKEN=$FABRIC_TOKEN" >> "$GITHUB_ENV"
 
+      - name: Deprovision workspace identity (cleanup after a Failed state)
+        if: ${{ inputs.force_deprovision == true }}
+        run: |
+          HTTP_STATUS=$(curl -s -D deprovision-headers.txt -o deprovision-response.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $FABRIC_TOKEN" \
+            -H "Content-Length: 0" \
+            --data-raw "" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/deprovisionIdentity")
+          echo "HTTP status: $HTTP_STATUS"
+          cat deprovision-response.json | jq . || cat deprovision-response.json
+          if [ "$HTTP_STATUS" -ge 400 ]; then
+            echo "::error::deprovisionIdentity failed with status $HTTP_STATUS"
+            exit 1
+          fi
+          if [ "$HTTP_STATUS" = "202" ]; then
+            OP_URL=$(grep -i '^location:' deprovision-headers.txt | sed 's/^[Ll]ocation: //I' | tr -d '\r')
+            echo "Polling LRO: $OP_URL"
+            for i in $(seq 1 15); do
+              sleep 3
+              OP_STATUS_JSON=$(curl -s -H "Authorization: Bearer $FABRIC_TOKEN" "$OP_URL")
+              OP_STATE=$(echo "$OP_STATUS_JSON" | jq -r '.status')
+              echo "Operation status: $OP_STATE"
+              if [ "$OP_STATE" = "Succeeded" ]; then
+                echo "Deprovision succeeded."
+                break
+              elif [ "$OP_STATE" = "Failed" ]; then
+                echo "::error::deprovisionIdentity operation failed"
+                echo "$OP_STATUS_JSON" | jq .
+                exit 1
+              fi
+            done
+          fi
+          echo "::notice::Workspace identity deprovisioned. Wait 5 minutes, then re-run this workflow WITHOUT force_deprovision to create it again."
+
       - name: Provision (or reuse) the Fabric workspace identity
+        if: ${{ inputs.force_deprovision != true }}
         run: |
           WS=$(curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
             "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}")
@@ -75,6 +115,7 @@ jobs:
           echo "::notice::Workspace identity servicePrincipalId=$WS_SP_ID (needs Azure Event Hubs Data Receiver role on the namespace)"
 
       - name: Resolve Eventstream and KQL Database item IDs
+        if: ${{ inputs.force_deprovision != true }}
         run: |
           ITEMS=$(curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
             "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/items")
@@ -86,6 +127,7 @@ jobs:
           echo "KQL Database ID: $KQLDB_ID"
 
       - name: Create Fabric connection to EH-source (idempotent)
+        if: ${{ inputs.force_deprovision != true }}
         run: |
           EXISTING=$(curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
             "https://api.fabric.microsoft.com/v1/connections" \
@@ -132,6 +174,7 @@ jobs:
           fi
 
       - name: Build and apply Eventstream topology definition
+        if: ${{ inputs.force_deprovision != true }}
         run: |
           cat > eventstream.json <<EOF
           {
