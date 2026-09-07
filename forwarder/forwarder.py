@@ -19,9 +19,20 @@ from azure.eventhub import EventData, EventHubConsumerClient, EventHubProducerCl
 forwarded_count = 0
 
 
+def _get_body_bytes(event) -> bytes:
+    """Extract the raw body as bytes, working across azure-eventhub SDK versions."""
+    if hasattr(event, "body_as_bytes"):
+        raw = event.body_as_bytes()
+    else:
+        raw = event.body
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw)
+    return b"".join(raw)
+
+
 def _on_event(producer: EventHubProducerClient, partition_context, event):
     global forwarded_count
-    raw = b"".join(event.body_as_bytes())
+    raw = _get_body_bytes(event)
     batch = producer.create_batch()
     batch.add(EventData(raw))
     producer.send_batch(batch)
