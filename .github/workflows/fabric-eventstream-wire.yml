@@ -1,0 +1,157 @@
+name: Fabric Eventstream Auto-Wire
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  wire-eventstream:
+    runs-on: ubuntu-latest
+    env:
+      NAMESPACE_NAME: ehns-test-se-stream2eh-srzfa5vvnklsy
+      RESOURCE_GROUP: test-SE-stream2EH
+      EVENTHUB_NAME: EH-source
+      SAS_POLICY_NAME: fabric-listen-policy
+      TABLE_NAME: EnergyTelemetry
+    steps:
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get Fabric-scoped access token
+        run: |
+          FABRIC_TOKEN=$(az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv)
+          echo "::add-mask::$FABRIC_TOKEN"
+          echo "FABRIC_TOKEN=$FABRIC_TOKEN" >> "$GITHUB_ENV"
+
+      - name: Get Event Hub Listen SAS key
+        run: |
+          SAS_KEY=$(az eventhubs eventhub authorization-rule keys list \
+            --resource-group "$RESOURCE_GROUP" \
+            --namespace-name "$NAMESPACE_NAME" \
+            --eventhub-name "$EVENTHUB_NAME" \
+            --name "$SAS_POLICY_NAME" \
+            --query primaryKey -o tsv)
+          echo "::add-mask::$SAS_KEY"
+          echo "SAS_KEY=$SAS_KEY" >> "$GITHUB_ENV"
+
+      - name: Resolve Eventstream and KQL Database item IDs
+        run: |
+          ITEMS=$(curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/items")
+          EVENTSTREAM_ID=$(echo "$ITEMS" | jq -r '.value[] | select(.type=="Eventstream" and .displayName=="stream4ehab") | .id')
+          KQLDB_ID=$(echo "$ITEMS" | jq -r '.value[] | select(.type=="KQLDatabase" and .displayName=="db4ehab") | .id')
+          echo "EVENTSTREAM_ID=$EVENTSTREAM_ID" >> "$GITHUB_ENV"
+          echo "KQLDB_ID=$KQLDB_ID" >> "$GITHUB_ENV"
+          echo "Eventstream ID: $EVENTSTREAM_ID"
+          echo "KQL Database ID: $KQLDB_ID"
+
+      - name: Create Fabric connection to EH-source (idempotent)
+        run: |
+          EXISTING=$(curl -sf -H "Authorization: Bearer $FABRIC_TOKEN" \
+            "https://api.fabric.microsoft.com/v1/connections" \
+            | jq -r '.value[] | select(.displayName=="eh-source-connection") | .id')
+          if [ -n "$EXISTING" ]; then
+            echo "Connection already exists: $EXISTING"
+            echo "CONNECTION_ID=$EXISTING" >> "$GITHUB_ENV"
+          else
+            RESPONSE=$(curl -sf -X POST -H "Authorization: Bearer $FABRIC_TOKEN" -H "Content-Type: application/json" \
+              "https://api.fabric.microsoft.com/v1/connections" \
+              -d @- <<EOF
+          {
+            "connectivityType": "ShareableCloud",
+            "displayName": "eh-source-connection",
+            "privacyLevel": "Organizational",
+            "connectionDetails": {
+              "type": "EventHub",
+              "creationMethod": "EventHub.Contents",
+              "parameters": [
+                { "dataType": "Text", "name": "endpoint", "value": "sb://${NAMESPACE_NAME}.servicebus.windows.net/" },
+                { "dataType": "Text", "name": "entityPath", "value": "${EVENTHUB_NAME}" }
+              ]
+            },
+            "credentialDetails": {
+              "singleSignOnType": "None",
+              "connectionEncryption": "NotEncrypted",
+              "skipTestConnection": false,
+              "credentials": {
+                "credentialType": "Basic",
+                "username": "${SAS_POLICY_NAME}",
+                "password": "${SAS_KEY}"
+              }
+            }
+          }
+          EOF
+            )
+            echo "$RESPONSE" | jq 'del(.credentialDetails)'
+            CONNECTION_ID=$(echo "$RESPONSE" | jq -r '.id')
+            echo "CONNECTION_ID=$CONNECTION_ID" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build and apply Eventstream topology definition
+        run: |
+          cat > eventstream.json <<EOF
+          {
+            "sources": [
+              {
+                "name": "EH-source",
+                "type": "AzureEventHub",
+                "properties": {
+                  "dataConnectionId": "${CONNECTION_ID}",
+                  "consumerGroupName": "fabric-eventstream-cg",
+                  "inputSerialization": { "type": "Json", "properties": { "encoding": "UTF8" } }
+                }
+              }
+            ],
+            "destinations": [
+              {
+                "name": "db4ehab-dest",
+                "type": "Eventhouse",
+                "properties": {
+                  "dataIngestionMode": "ProcessedIngestion",
+                  "workspaceId": "${{ vars.FABRIC_WORKSPACE_ID }}",
+                  "itemId": "${KQLDB_ID}",
+                  "databaseName": "db4ehab",
+                  "tableName": "${TABLE_NAME}",
+                  "inputSerialization": { "type": "Json", "properties": { "encoding": "UTF8" } }
+                },
+                "inputNodes": [{ "name": "EH-source-stream" }]
+              }
+            ],
+            "operators": [],
+            "streams": [
+              {
+                "name": "EH-source-stream",
+                "type": "DefaultStream",
+                "properties": {},
+                "inputNodes": [{ "name": "EH-source" }]
+              }
+            ],
+            "compatibilityLevel": "1.0"
+          }
+          EOF
+          cat eventstream.json | jq .
+
+          PAYLOAD_B64=$(base64 -w0 eventstream.json)
+          cat > update-request.json <<EOF
+          {
+            "definition": {
+              "parts": [
+                {
+                  "path": "eventstream.json",
+                  "payload": "${PAYLOAD_B64}",
+                  "payloadType": "InlineBase64"
+                }
+              ]
+            }
+          }
+          EOF
+
+          curl -sf -X POST -H "Authorization: Bearer $FABRIC_TOKEN" -H "Content-Type: application/json" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ vars.FABRIC_WORKSPACE_ID }}/eventstreams/${EVENTSTREAM_ID}/updateDefinition" \
+            -d @update-request.json -i
