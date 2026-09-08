@@ -84,15 +84,28 @@ def _get_body_bytes(event) -> bytes:
 def on_event_batch(partition_context, event_batch):
     global total
     for event in event_batch:
-        total += 1
         body = _get_body_bytes(event).decode("utf-8")
         last_seen[partition_context.partition_id] = event.sequence_number
         try:
             parsed = json.loads(body)
-            device_id = parsed.get("deviceId")
-            voltage_v = parsed.get("voltageV")
+        except json.JSONDecodeError:
+            total += 1
+            print(f"[{partition_context.partition_id}] (non-JSON) {body}", flush=True)
+            continue
+
+        # A message body may be a single reading (dict) or a micro-batch of
+        # readings (list) - Fabric's Eventstream can batch multiple qualifying
+        # events into one message.
+        readings = parsed if isinstance(parsed, list) else [parsed]
+        for reading in readings:
+            total += 1
+            if not isinstance(reading, dict):
+                print(f"[{partition_context.partition_id}] (unexpected shape) {reading}", flush=True)
+                continue
+            device_id = reading.get("deviceId")
+            voltage_v = reading.get("voltageV")
             latency_str = "n/a"
-            spike_detected_at_str = parsed.get("spikeDetectedAtUtc")
+            spike_detected_at_str = reading.get("spikeDetectedAtUtc")
             if spike_detected_at_str and event.enqueued_time:
                 spike_detected_at = datetime.fromisoformat(spike_detected_at_str)
                 enqueued_at = event.enqueued_time
@@ -104,8 +117,6 @@ def on_event_batch(partition_context, event_batch):
                 f"latency(filter->EH-target)={latency_str}",
                 flush=True,
             )
-        except json.JSONDecodeError:
-            print(f"[{partition_context.partition_id}] (non-JSON) {body}", flush=True)
 
 
 def stop_after_duration():

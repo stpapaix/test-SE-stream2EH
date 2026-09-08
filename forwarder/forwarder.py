@@ -49,26 +49,46 @@ def _forward_message(producer: EventHubProducerClient, msg) -> None:
     Kafka broker's own message timestamp - the closest available proxy for "when
     the voltage spike filter produced this event", since Fabric appends to the
     derived stream's Kafka topic immediately after the filter match.
+
+    A single Kafka message may contain either one reading (a JSON object) or a
+    micro-batch of readings (a JSON array of objects) - Fabric's Eventstream can
+    batch multiple qualifying events together. Each reading is forwarded as its
+    own EventData so EH-target always receives one JSON object per message.
     """
     global forwarded_count
-    payload = msg.value()
+    raw_payload = msg.value()
+    _, timestamp_ms = msg.timestamp()
+    spike_detected_at = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
 
     try:
-        parsed = json.loads(payload.decode("utf-8"))
-        _, timestamp_ms = msg.timestamp()
-        spike_detected_at = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
-        parsed["spikeDetectedAtUtc"] = spike_detected_at.isoformat()
-        payload = json.dumps(parsed).encode("utf-8")
-        summary = json.dumps(parsed)
+        parsed = json.loads(raw_payload.decode("utf-8"))
     except Exception:
-        summary = payload.decode("utf-8", errors="replace")
+        parsed = None
+
+    if isinstance(parsed, list):
+        readings = parsed
+    elif isinstance(parsed, dict):
+        readings = [parsed]
+    else:
+        readings = None
+
+    if readings is None:
+        batch = producer.create_batch()
+        batch.add(EventData(raw_payload))
+        producer.send_batch(batch)
+        forwarded_count += 1
+        print(f"::notice::Forwarded event #{forwarded_count} to EH-target (unparsed): {raw_payload!r}")
+        return
 
     batch = producer.create_batch()
-    batch.add(EventData(payload))
+    for reading in readings:
+        if isinstance(reading, dict):
+            reading["spikeDetectedAtUtc"] = spike_detected_at.isoformat()
+        batch.add(EventData(json.dumps(reading)))
     producer.send_batch(batch)
-    forwarded_count += 1
+    forwarded_count += len(readings)
 
-    print(f"::notice::Forwarded event #{forwarded_count} to EH-target: {summary}")
+    print(f"::notice::Forwarded {len(readings)} event(s) (total {forwarded_count}) to EH-target: {json.dumps(readings)}")
 
 
 def main() -> None:
