@@ -13,7 +13,13 @@ Usage (env vars):
                              SharedAccessKeyName=...;SharedAccessKey=...;EntityPath=<topic>)
                              - bootstrap server and topic are parsed out of it.
   SOURCE_CONSUMER_GROUP      Kafka consumer group / EventHub consumer group (default: $Default)
-  TARGET_CONNECTION_STRING   connection string for EH-target (fabric-send-policy)
+  TARGET_CONNECTION_STRING   connection string for EH-target, used only to derive the
+                             namespace FQDN and entity name (its SharedAccessKey is not used
+                             for auth: EH-target enforces disableLocalAuth via Azure Policy,
+                             so the producer authenticates with Azure AD/DefaultAzureCredential
+                             instead - the caller's identity must have "Azure Event Hubs Data
+                             Sender" on eh-target: Managed Identity in Container Apps, or an
+                             az-cli-logged-in principal in GitHub Actions via azure/login).
   DURATION_SECONDS           how long to consume/forward per run (default: 60)
   KAFKA_AUTO_OFFSET_RESET    "earliest" or "latest" (default: earliest)
 """
@@ -24,6 +30,7 @@ import time
 from datetime import datetime, timezone
 
 from azure.eventhub import EventData, EventHubProducerClient
+from azure.identity import DefaultAzureCredential
 from confluent_kafka import Consumer, KafkaException
 
 forwarded_count = 0
@@ -42,6 +49,21 @@ def _parse_source_connection_string(connection_string: str) -> tuple[str, str]:
     topic = match.group(1)
 
     return bootstrap_server, topic
+
+
+def _parse_target_connection_string(connection_string: str) -> tuple[str, str]:
+    """Extract (fully_qualified_namespace, eventhub_name) from an Event-Hub connection string."""
+    match = re.search(r"Endpoint=sb://([^/;]+)", connection_string)
+    if not match:
+        raise ValueError("TARGET_CONNECTION_STRING is missing an Endpoint=sb://<host> segment")
+    fully_qualified_namespace = match.group(1)
+
+    match = re.search(r"EntityPath=([^;]+)", connection_string)
+    if not match:
+        raise ValueError("TARGET_CONNECTION_STRING is missing an EntityPath=<eventhub> segment")
+    eventhub_name = match.group(1)
+
+    return fully_qualified_namespace, eventhub_name
 
 
 def _forward_message(producer: EventHubProducerClient, msg) -> None:
@@ -103,7 +125,13 @@ def main() -> None:
     bootstrap_server, topic = _parse_source_connection_string(source_connection_string)
     print(f"::notice::Kafka bootstrap server: {bootstrap_server}, topic: {topic}")
 
-    producer = EventHubProducerClient.from_connection_string(target_connection_string)
+    target_namespace, target_eventhub = _parse_target_connection_string(target_connection_string)
+    print(f"::notice::EH-target namespace: {target_namespace}, eventhub: {target_eventhub} (Azure AD auth)")
+    producer = EventHubProducerClient(
+        fully_qualified_namespace=target_namespace,
+        eventhub_name=target_eventhub,
+        credential=DefaultAzureCredential(),
+    )
 
     consumer = Consumer(
         {

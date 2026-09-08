@@ -66,6 +66,9 @@ resource containerAppsEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
 resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: containerAppName
   location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     managedEnvironmentId: containerAppsEnv.id
     configuration: {
@@ -132,3 +135,4 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
 output acrLoginServer string = acr.properties.loginServer
 output containerAppName string = containerApp.name
 output containerAppFqdn string = containerApp.properties.configuration.?ingress.?fqdn ?? 'no ingress (background worker)'
+output containerAppPrincipalId string = containerApp.identity.principalId
