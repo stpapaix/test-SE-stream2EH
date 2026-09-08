@@ -34,7 +34,7 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' = {
     name: 'Basic'
   }
   properties: {
-    adminUserEnabled: false
+    adminUserEnabled: true
   }
 }
 
@@ -66,9 +66,6 @@ resource containerAppsEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
 resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: containerAppName
   location: location
-  identity: {
-    type: 'SystemAssigned'
-  }
   properties: {
     managedEnvironmentId: containerAppsEnv.id
     configuration: {
@@ -76,10 +73,15 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       registries: [
         {
           server: acr.properties.loginServer
-          identity: 'system'
+          username: acr.listCredentials().username
+          passwordSecretRef: 'acr-password'
         }
       ]
       secrets: [
+        {
+          name: 'acr-password'
+          value: acr.listCredentials().passwords[0].value
+        }
         {
           name: 'source-connection-string'
           value: sourceConnectionString
@@ -124,17 +126,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         maxReplicas: 1
       }
     }
-  }
-}
-
-// Grant the Container App's managed identity permission to pull from ACR.
-resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, containerApp.id, 'AcrPull')
-  scope: acr
-  properties: {
-    principalId: containerApp.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull
   }
 }
 

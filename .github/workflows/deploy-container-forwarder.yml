@@ -1,0 +1,49 @@
+name: Deploy Spike Forwarder to Container Apps
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Container Apps infrastructure (ACR, environment, app)
+        id: infra
+        run: |
+          az deployment group create \
+            --resource-group test-SE-stream2EH \
+            --template-file infra/containerapp-forwarder.bicep \
+            --parameters sourceConnectionString='${{ secrets.FABRIC_ENDPOINT_CONNECTION_STRING }}' \
+            --parameters targetConnectionString='${{ secrets.EHTARGET_SEND_CONNECTION_STRING }}' \
+            --query "properties.outputs" -o json > outputs.json
+          cat outputs.json
+          echo "acrLoginServer=$(jq -r '.acrLoginServer.value' outputs.json)" >> "$GITHUB_OUTPUT"
+          echo "containerAppName=$(jq -r '.containerAppName.value' outputs.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push forwarder image to ACR
+        run: |
+          az acr build \
+            --registry ${{ steps.infra.outputs.acrLoginServer }} \
+            --image spike-forwarder:${{ github.sha }} \
+            --image spike-forwarder:latest \
+            --file forwarder/Dockerfile \
+            .
+
+      - name: Update Container App to use the new image
+        run: |
+          az containerapp update \
+            --name ${{ steps.infra.outputs.containerAppName }} \
+            --resource-group test-SE-stream2EH \
+            --image ${{ steps.infra.outputs.acrLoginServer }}/spike-forwarder:${{ github.sha }}
