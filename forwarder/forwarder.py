@@ -128,14 +128,27 @@ def main() -> None:
         print(f"Consuming from Kafka topic '{topic}' for {duration_seconds}s, forwarding to EH-target...")
 
     try:
+        last_heartbeat = time.monotonic()
         while deadline is None or time.monotonic() < deadline:
             try:
                 msg = consumer.poll(timeout=1.0)
                 if msg is None:
+                    if time.monotonic() - last_heartbeat >= 30:
+                        assignment = consumer.assignment()
+                        print(
+                            f"::notice::Heartbeat: no message in the last poll window. "
+                            f"Partitions assigned: {[p.partition for p in assignment] if assignment else 'none yet'}"
+                        )
+                        last_heartbeat = time.monotonic()
                     continue
+                last_heartbeat = time.monotonic()
                 if msg.error():
                     print(f"::notice::Kafka consumer error: {msg.error()}")
                     continue
+                print(
+                    f"::notice::Captured event: partition={msg.partition()} offset={msg.offset()} "
+                    f"key={msg.key()} value_size={len(msg.value()) if msg.value() else 0} bytes"
+                )
                 _forward_message(producer, msg)
             except KafkaException as exc:
                 print(f"::notice::Kafka consumer error, continuing: {exc}")
