@@ -44,18 +44,29 @@ def _parse_source_connection_string(connection_string: str) -> tuple[str, str]:
     return bootstrap_server, topic
 
 
-def _forward_message(producer: EventHubProducerClient, payload: bytes) -> None:
+def _forward_message(producer: EventHubProducerClient, msg) -> None:
+    """Forward a Kafka message to EH-target, stamping spikeDetectedAtUtc from the
+    Kafka broker's own message timestamp - the closest available proxy for "when
+    the voltage spike filter produced this event", since Fabric appends to the
+    derived stream's Kafka topic immediately after the filter match.
+    """
     global forwarded_count
+    payload = msg.value()
+
+    try:
+        parsed = json.loads(payload.decode("utf-8"))
+        _, timestamp_ms = msg.timestamp()
+        spike_detected_at = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+        parsed["spikeDetectedAtUtc"] = spike_detected_at.isoformat()
+        payload = json.dumps(parsed).encode("utf-8")
+        summary = json.dumps(parsed)
+    except Exception:
+        summary = payload.decode("utf-8", errors="replace")
+
     batch = producer.create_batch()
     batch.add(EventData(payload))
     producer.send_batch(batch)
     forwarded_count += 1
-
-    try:
-        parsed = json.loads(payload.decode("utf-8"))
-        summary = json.dumps(parsed)
-    except Exception:
-        summary = payload.decode("utf-8", errors="replace")
 
     print(f"::notice::Forwarded event #{forwarded_count} to EH-target: {summary}")
 
@@ -98,7 +109,7 @@ def main() -> None:
             if msg.error():
                 print(f"::notice::Kafka consumer error: {msg.error()}")
                 continue
-            _forward_message(producer, msg.value())
+            _forward_message(producer, msg)
     except KafkaException as exc:
         print(f"::notice::Kafka consumer stopped: {exc}")
     finally:
@@ -106,10 +117,6 @@ def main() -> None:
         producer.close()
 
     print(f"Done. Forwarded {forwarded_count} event(s) to EH-target.")
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":

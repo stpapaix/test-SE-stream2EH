@@ -29,6 +29,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime, timezone
 
 from azure.eventhub import EventHubConsumerClient
 from azure.identity import AzureCliCredential, ChainedTokenCredential, DefaultAzureCredential
@@ -88,7 +89,21 @@ def on_event_batch(partition_context, event_batch):
         last_seen[partition_context.partition_id] = event.sequence_number
         try:
             parsed = json.loads(body)
-            print(f"[{partition_context.partition_id}] {json.dumps(parsed, indent=2)}", flush=True)
+            device_id = parsed.get("deviceId")
+            voltage_v = parsed.get("voltageV")
+            latency_str = "n/a"
+            spike_detected_at_str = parsed.get("spikeDetectedAtUtc")
+            if spike_detected_at_str and event.enqueued_time:
+                spike_detected_at = datetime.fromisoformat(spike_detected_at_str)
+                enqueued_at = event.enqueued_time
+                if enqueued_at.tzinfo is None:
+                    enqueued_at = enqueued_at.replace(tzinfo=timezone.utc)
+                latency_str = f"{(enqueued_at - spike_detected_at).total_seconds():.2f}s"
+            print(
+                f"[{partition_context.partition_id}] deviceId={device_id} voltageV={voltage_v} "
+                f"latency(filter->EH-target)={latency_str}",
+                flush=True,
+            )
         except json.JSONDecodeError:
             print(f"[{partition_context.partition_id}] (non-JSON) {body}", flush=True)
 
