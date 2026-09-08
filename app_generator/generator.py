@@ -1,14 +1,15 @@
-"""App_generator: simulates energy-management telemetry and streams it to Azure Event Hubs.
+"""App_generator: simulates energy-management telemetry and streams it directly to a
+Fabric Eventstream Custom Endpoint source (Event Hubs protocol).
 
 Usage (env vars):
-  EVENTHUB_NAMESPACE   fully-qualified namespace, e.g. ehns-xxx.servicebus.windows.net
-  EVENTHUB_NAME        event hub entity name (default: EH-source)
-  DURATION_SECONDS     how long to run (default: 300)
-  INTERVAL_SECONDS     seconds between batches (default: 5)
-  BATCH_SIZE           events per batch (default: 10)
+  EVENTHUB_CONNECTION_STRING   connection string for the Fabric custom endpoint source
+                                (Event Hub protocol, includes EntityPath)
+  DURATION_SECONDS              how long to run (default: 300)
+  INTERVAL_SECONDS              seconds between batches (default: 5)
+  BATCH_SIZE                    events per batch (default: 10)
 
-Auth: uses AzureCliCredential first (works right after `azure/login` in GitHub Actions
-or after a local `az login`), falling back to DefaultAzureCredential.
+Auth: SAS connection string only - no Azure AD / azure/login needed, since the
+Fabric custom endpoint manages its own keys independent of any Event Hub namespace.
 """
 import json
 import os
@@ -18,7 +19,6 @@ import uuid
 from datetime import datetime, timezone
 
 from azure.eventhub import EventData, EventHubProducerClient
-from azure.identity import AzureCliCredential, ChainedTokenCredential, DefaultAzureCredential
 
 DEVICE_TYPES = ["smart_meter", "solar_inverter", "wind_turbine", "battery_storage", "ev_charger"]
 REGIONS = ["west-eu", "north-eu", "south-eu"]
@@ -72,20 +72,14 @@ def _simulate_reading(device: dict) -> dict:
 
 
 def main() -> None:
-    namespace = os.environ["EVENTHUB_NAMESPACE"]
-    eventhub_name = os.environ.get("EVENTHUB_NAME", "EH-source")
+    connection_string = os.environ["EVENTHUB_CONNECTION_STRING"]
     duration_seconds = int(os.environ.get("DURATION_SECONDS", "300"))
     interval_seconds = float(os.environ.get("INTERVAL_SECONDS", "5"))
     batch_size = int(os.environ.get("BATCH_SIZE", "10"))
 
-    credential = ChainedTokenCredential(AzureCliCredential(), DefaultAzureCredential())
-    producer = EventHubProducerClient(
-        fully_qualified_namespace=namespace,
-        eventhub_name=eventhub_name,
-        credential=credential,
-    )
+    producer = EventHubProducerClient.from_connection_string(connection_string)
 
-    print(f"Streaming to {namespace}/{eventhub_name} for {duration_seconds}s "
+    print(f"Streaming to Fabric custom endpoint source for {duration_seconds}s "
           f"({batch_size} events every {interval_seconds}s)")
 
     start = time.monotonic()
