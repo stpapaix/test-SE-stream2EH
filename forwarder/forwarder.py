@@ -9,6 +9,7 @@ Usage (env vars):
   LOOKBACK_MINUTES           how far back to look for events not yet seen (default: 20)
 """
 import json
+import hashlib
 import os
 import threading
 import time
@@ -58,12 +59,17 @@ def _on_event(producer: EventHubProducerClient, partition_context, event):
 
 
 def main() -> None:
-    source_connection_string = os.environ["SOURCE_CONNECTION_STRING"]
+    source_connection_string = os.environ["SOURCE_CONNECTION_STRING"].strip().strip('"').strip("'")
     source_consumer_group = os.environ.get("SOURCE_CONSUMER_GROUP", "$Default")
-    target_connection_string = os.environ["TARGET_CONNECTION_STRING"]
+    target_connection_string = os.environ["TARGET_CONNECTION_STRING"].strip().strip('"').strip("'")
     duration_seconds = int(os.environ.get("DURATION_SECONDS", "60"))
     lookback_minutes = int(os.environ.get("LOOKBACK_MINUTES", "20"))
     starting_position = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+
+    source_hash = hashlib.sha256(source_connection_string.encode("utf-8")).hexdigest()[:12]
+    print(
+        f"::notice::SOURCE_CONNECTION_STRING: length={len(source_connection_string)} sha256[:12]={source_hash}"
+    )
 
     producer = EventHubProducerClient.from_connection_string(target_connection_string)
     consumer = EventHubConsumerClient.from_connection_string(
