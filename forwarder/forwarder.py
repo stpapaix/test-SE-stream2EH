@@ -10,6 +10,7 @@ Usage (env vars):
 """
 import json
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -59,6 +60,12 @@ def _on_event(producer: EventHubProducerClient, partition_context, event):
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger("azure.eventhub").setLevel(logging.DEBUG)
+    logging.getLogger("uamqp").setLevel(logging.DEBUG)
+
+    print(f"::notice::Current UTC time on runner: {datetime.now(timezone.utc).isoformat()}")
+
     source_connection_string = os.environ["SOURCE_CONNECTION_STRING"].strip().strip('"').strip("'")
     source_consumer_group = os.environ.get("SOURCE_CONSUMER_GROUP", "$Default")
     target_connection_string = os.environ["TARGET_CONNECTION_STRING"].strip().strip('"').strip("'")
