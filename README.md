@@ -90,7 +90,7 @@ One JSON event per reading, fleet of `smart_meter`, `solar_inverter`, `wind_turb
 }
 ```
 
-`voltageV` spikes to exactly 240 with 10% probability per reading — this is what the
+`voltageV` spikes into the 240-245V range with 20% probability per reading — this is what the
 Eventstream's `voltage_spike_filter` (`voltageV >= 240`) selects for the derived stream
 and, ultimately, for `EH-target`.
 

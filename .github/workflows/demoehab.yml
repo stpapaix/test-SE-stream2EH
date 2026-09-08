@@ -8,6 +8,9 @@ on:
       duration_seconds:
         description: 'How long to stream events for (seconds)'
         default: '300'
+      interval_seconds:
+        description: 'Seconds between batches'
+        default: '5'
 
 permissions:
   contents: read
@@ -29,6 +32,6 @@ jobs:
         env:
           EVENTHUB_CONNECTION_STRING: ${{ secrets.GENERATOR_SOURCE_CONNECTION_STRING }}
           DURATION_SECONDS: ${{ github.event.inputs.duration_seconds || '300' }}
-          INTERVAL_SECONDS: '5'
+          INTERVAL_SECONDS: ${{ github.event.inputs.interval_seconds || '5' }}
           BATCH_SIZE: '10'
         run: python app_generator/generator.py

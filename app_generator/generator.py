@@ -8,6 +8,8 @@ Usage (env vars):
   INTERVAL_SECONDS              seconds between batches (default: 5)
   BATCH_SIZE                    events per batch (default: 10)
 
+Voltage: 20% of readings simulate a spike in the 240-245V range; the rest are 228-232V.
+
 Auth: SAS connection string only - no Azure AD / azure/login needed, since the
 Fabric custom endpoint manages its own keys independent of any Event Hub namespace.
 """
@@ -62,7 +64,7 @@ def _simulate_reading(device: dict) -> dict:
         "siteId": device["siteId"],
         "region": device["region"],
         "activePowerKw": active_power,
-        "voltageV": round(240.0 if random.random() < 0.10 else random.uniform(228, 232), 1),
+        "voltageV": round(random.uniform(240, 245) if random.random() < 0.20 else random.uniform(228, 232), 1),
         "currentA": round(abs(active_power) * 1000 / 230, 1),
         "frequencyHz": round(random.uniform(49.95, 50.05), 3),
         "powerFactor": round(random.uniform(0.9, 1.0), 2),
