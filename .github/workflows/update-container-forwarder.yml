@@ -1,0 +1,51 @@
+name: Update Spike Forwarder Container Image
+
+# Lightweight companion to "Deploy Spike Forwarder to Container Apps".
+# Use this one for code-only changes (forwarder.py, Dockerfile) once the
+# infra (ACR/environment/Container App) already exists — it skips the Bicep
+# deployment entirely, so it's faster and doesn't blip the app back to the
+# placeholder image mid-deploy.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: test-SE-stream2EH
+  CONTAINER_APP_NAME: ca-spike-forwarder
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Look up ACR login server
+        id: acr
+        run: |
+          server=$(az acr list --resource-group "$RESOURCE_GROUP" --query "[0].loginServer" -o tsv)
+          echo "loginServer=$server" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push forwarder image to ACR
+        run: |
+          az acr build \
+            --registry ${{ steps.acr.outputs.loginServer }} \
+            --image spike-forwarder:${{ github.sha }} \
+            --image spike-forwarder:latest \
+            --file forwarder/Dockerfile \
+            .
+
+      - name: Update Container App to use the new image
+        run: |
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image ${{ steps.acr.outputs.loginServer }}/spike-forwarder:${{ github.sha }}
