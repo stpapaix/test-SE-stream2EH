@@ -2,8 +2,10 @@ name: Voltage Spike Forwarder
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/15 * * * *"
+    inputs:
+      duration_seconds:
+        description: 'How long to consume/forward events for (seconds)'
+        default: '300'
 
 permissions:
   contents: read
@@ -13,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SOURCE_CONSUMER_GROUP: "$Default"
-      DURATION_SECONDS: "60"
+      DURATION_SECONDS: ${{ github.event.inputs.duration_seconds || '300' }}
     steps:
       - uses: actions/checkout@v4
 
