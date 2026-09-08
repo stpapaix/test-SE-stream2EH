@@ -1,1 +1,2 @@
 azure-eventhub==5.15.1
+confluent-kafka==2.5.3

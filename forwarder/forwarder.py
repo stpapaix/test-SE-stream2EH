@@ -1,129 +1,115 @@
 """forwarder: consumes voltage-spike events from a Fabric Eventstream custom endpoint
-and republishes them to the Azure Event Hub EH-target.
+(via the Kafka protocol) and republishes them to the Azure Event Hub EH-target (via AMQP).
+
+The Kafka protocol is used for the SOURCE because the Event Hubs/AMQP protocol's
+partition-level CBS auth is consistently rejected by this Fabric custom endpoint
+(com.microsoft:auth-failed), even though the same connection string authenticates
+fine for AMQP metadata operations. Kafka's SASL_SSL/PLAIN auth is a different code
+path that does not hit this issue.
 
 Usage (env vars):
-  SOURCE_CONNECTION_STRING   connection string for the Fabric custom endpoint (Event Hub protocol)
-  SOURCE_CONSUMER_GROUP      consumer group on the custom endpoint (default: $Default)
+  SOURCE_CONNECTION_STRING   connection string for the Fabric custom endpoint
+                             (Event Hub protocol format: Endpoint=sb://<host>/;
+                             SharedAccessKeyName=...;SharedAccessKey=...;EntityPath=<topic>)
+                             - bootstrap server and topic are parsed out of it.
+  SOURCE_CONSUMER_GROUP      Kafka consumer group / EventHub consumer group (default: $Default)
   TARGET_CONNECTION_STRING   connection string for EH-target (fabric-send-policy)
   DURATION_SECONDS           how long to consume/forward per run (default: 60)
-  LOOKBACK_MINUTES           how far back to look for events not yet seen (default: 20)
+  KAFKA_AUTO_OFFSET_RESET    "earliest" or "latest" (default: earliest)
 """
 import json
-import hashlib
-import logging
 import os
-import threading
+import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-from azure.eventhub import EventData, EventHubConsumerClient, EventHubProducerClient
+from azure.eventhub import EventData, EventHubProducerClient
+from confluent_kafka import Consumer, KafkaException
 
 forwarded_count = 0
 
 
-def _get_body_bytes(event) -> bytes:
-    """Extract the raw body as bytes, working across azure-eventhub SDK versions.
+def _parse_source_connection_string(connection_string: str) -> tuple[str, str]:
+    """Extract (bootstrap_server, topic) from an Event-Hub-protocol connection string."""
+    match = re.search(r"Endpoint=sb://([^/;]+)", connection_string)
+    if not match:
+        raise ValueError("SOURCE_CONNECTION_STRING is missing an Endpoint=sb://<host> segment")
+    bootstrap_server = f"{match.group(1)}:9093"
 
-    Some messages (e.g. connection-test probes) carry an empty/None body,
-    which surfaces as a None chunk in the body generator/list.
-    """
-    if hasattr(event, "body_as_bytes"):
-        raw = event.body_as_bytes()
-    else:
-        raw = event.body
-    if raw is None:
-        return b""
-    if isinstance(raw, (bytes, bytearray)):
-        return bytes(raw)
-    return b"".join(chunk for chunk in raw if chunk is not None)
+    match = re.search(r"EntityPath=([^;]+)", connection_string)
+    if not match:
+        raise ValueError("SOURCE_CONNECTION_STRING is missing an EntityPath=<topic> segment")
+    topic = match.group(1)
+
+    return bootstrap_server, topic
 
 
-def _on_event(producer: EventHubProducerClient, partition_context, event):
+def _forward_message(producer: EventHubProducerClient, payload: bytes) -> None:
     global forwarded_count
-    raw = _get_body_bytes(event)
     batch = producer.create_batch()
-    batch.add(EventData(raw))
+    batch.add(EventData(payload))
     producer.send_batch(batch)
     forwarded_count += 1
 
     try:
-        payload = json.loads(raw.decode("utf-8"))
-        summary = json.dumps(payload)
+        parsed = json.loads(payload.decode("utf-8"))
+        summary = json.dumps(parsed)
     except Exception:
-        summary = raw.decode("utf-8", errors="replace")
+        summary = payload.decode("utf-8", errors="replace")
 
-    print(
-        f"::notice::Forwarded event #{forwarded_count} to EH-target "
-        f"(partition {partition_context.partition_id}, seq {event.sequence_number}): {summary}"
-    )
-    partition_context.update_checkpoint(event)
+    print(f"::notice::Forwarded event #{forwarded_count} to EH-target: {summary}")
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    logging.getLogger("azure.eventhub").setLevel(logging.DEBUG)
-    logging.getLogger("uamqp").setLevel(logging.DEBUG)
-
     print(f"::notice::Current UTC time on runner: {datetime.now(timezone.utc).isoformat()}")
 
     source_connection_string = os.environ["SOURCE_CONNECTION_STRING"].strip().strip('"').strip("'")
     source_consumer_group = os.environ.get("SOURCE_CONSUMER_GROUP", "$Default")
     target_connection_string = os.environ["TARGET_CONNECTION_STRING"].strip().strip('"').strip("'")
     duration_seconds = int(os.environ.get("DURATION_SECONDS", "60"))
-    lookback_minutes = int(os.environ.get("LOOKBACK_MINUTES", "20"))
-    starting_position = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+    auto_offset_reset = os.environ.get("KAFKA_AUTO_OFFSET_RESET", "earliest")
 
-    source_hash = hashlib.sha256(source_connection_string.encode("utf-8")).hexdigest()[:12]
-    print(
-        f"::notice::SOURCE_CONNECTION_STRING: length={len(source_connection_string)} sha256[:12]={source_hash}"
-    )
+    bootstrap_server, topic = _parse_source_connection_string(source_connection_string)
+    print(f"::notice::Kafka bootstrap server: {bootstrap_server}, topic: {topic}")
 
     producer = EventHubProducerClient.from_connection_string(target_connection_string)
-    probe_consumer = EventHubConsumerClient.from_connection_string(
-        source_connection_string, consumer_group=source_consumer_group
+
+    consumer = Consumer(
+        {
+            "bootstrap.servers": bootstrap_server,
+            "security.protocol": "SASL_SSL",
+            "sasl.mechanism": "PLAIN",
+            "sasl.username": "$ConnectionString",
+            "sasl.password": source_connection_string,
+            "group.id": source_consumer_group,
+            "auto.offset.reset": auto_offset_reset,
+            "enable.auto.commit": True,
+        }
     )
-    with probe_consumer:
-        partition_ids = probe_consumer.get_partition_ids()
-    print(f"::notice::Discovered partitions: {partition_ids}")
+    consumer.subscribe([topic])
 
-    print(f"Consuming from custom endpoint for {duration_seconds}s (lookback {lookback_minutes}m), forwarding to EH-target...")
-
-    # Fabric's custom endpoint rejects CBS auth when multiple partition receiver
-    # links authenticate concurrently, so poll partitions sequentially - one
-    # connection/link open at a time - instead of all-at-once (default EventProcessor
-    # behavior, and even a thread-per-partition approach, both open links in parallel).
-    per_partition_seconds = 5
+    print(f"Consuming from Kafka topic '{topic}' for {duration_seconds}s, forwarding to EH-target...")
     deadline = time.monotonic() + duration_seconds
-    round_num = 0
-    while time.monotonic() < deadline:
-        round_num += 1
-        for partition_id in partition_ids:
-            if time.monotonic() >= deadline:
-                break
-            partition_consumer = EventHubConsumerClient.from_connection_string(
-                source_connection_string, consumer_group=source_consumer_group
-            )
-
-            def close_after(client=partition_consumer):
-                time.sleep(per_partition_seconds)
-                client.close()
-
-            closer = threading.Thread(target=close_after, daemon=True)
-            closer.start()
-            try:
-                with partition_consumer:
-                    partition_consumer.receive(
-                        on_event=lambda partition_context, event: _on_event(producer, partition_context, event),
-                        partition_id=partition_id,
-                        starting_position=starting_position,
-                        max_wait_time=3,
-                    )
-            except Exception as exc:  # noqa: BLE001 - close() during receive raises, that's expected
-                print(f"::notice::[round {round_num}] Partition {partition_id} consumer stopped: {exc}")
-
-    producer.close()
+    try:
+        while time.monotonic() < deadline:
+            msg = consumer.poll(timeout=1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                print(f"::notice::Kafka consumer error: {msg.error()}")
+                continue
+            _forward_message(producer, msg.value())
+    except KafkaException as exc:
+        print(f"::notice::Kafka consumer stopped: {exc}")
+    finally:
+        consumer.close()
+        producer.close()
 
     print(f"Done. Forwarded {forwarded_count} event(s) to EH-target.")
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
