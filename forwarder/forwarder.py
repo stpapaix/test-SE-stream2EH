@@ -97,7 +97,7 @@ def main() -> None:
     source_connection_string = os.environ["SOURCE_CONNECTION_STRING"].strip().strip('"').strip("'")
     source_consumer_group = os.environ.get("SOURCE_CONSUMER_GROUP", "$Default")
     target_connection_string = os.environ["TARGET_CONNECTION_STRING"].strip().strip('"').strip("'")
-    duration_seconds = int(os.environ.get("DURATION_SECONDS", "60"))
+    duration_seconds = int(os.environ.get("DURATION_SECONDS", "0"))
     auto_offset_reset = os.environ.get("KAFKA_AUTO_OFFSET_RESET", "earliest")
 
     bootstrap_server, topic = _parse_source_connection_string(source_connection_string)
@@ -119,19 +119,28 @@ def main() -> None:
     )
     consumer.subscribe([topic])
 
-    print(f"Consuming from Kafka topic '{topic}' for {duration_seconds}s, forwarding to EH-target...")
-    deadline = time.monotonic() + duration_seconds
+    # DURATION_SECONDS <= 0 (or unset) means run forever - used for the Container Apps
+    # always-on deployment. GitHub Actions always sets DURATION_SECONDS explicitly.
+    deadline = time.monotonic() + duration_seconds if duration_seconds > 0 else None
+    if deadline is None:
+        print(f"Consuming from Kafka topic '{topic}' continuously, forwarding to EH-target...")
+    else:
+        print(f"Consuming from Kafka topic '{topic}' for {duration_seconds}s, forwarding to EH-target...")
+
     try:
-        while time.monotonic() < deadline:
-            msg = consumer.poll(timeout=1.0)
-            if msg is None:
-                continue
-            if msg.error():
-                print(f"::notice::Kafka consumer error: {msg.error()}")
-                continue
-            _forward_message(producer, msg)
-    except KafkaException as exc:
-        print(f"::notice::Kafka consumer stopped: {exc}")
+        while deadline is None or time.monotonic() < deadline:
+            try:
+                msg = consumer.poll(timeout=1.0)
+                if msg is None:
+                    continue
+                if msg.error():
+                    print(f"::notice::Kafka consumer error: {msg.error()}")
+                    continue
+                _forward_message(producer, msg)
+            except KafkaException as exc:
+                print(f"::notice::Kafka consumer error, continuing: {exc}")
+            except Exception as exc:  # noqa: BLE001 - keep the long-running loop alive on transient errors
+                print(f"::notice::Unexpected error forwarding message, continuing: {exc}")
     finally:
         consumer.close()
         producer.close()
