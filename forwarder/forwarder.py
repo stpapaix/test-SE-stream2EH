@@ -79,29 +79,49 @@ def main() -> None:
     )
 
     producer = EventHubProducerClient.from_connection_string(target_connection_string)
-    consumer = EventHubConsumerClient.from_connection_string(
+    probe_consumer = EventHubConsumerClient.from_connection_string(
         source_connection_string, consumer_group=source_consumer_group
     )
+    with probe_consumer:
+        partition_ids = probe_consumer.get_partition_ids()
+    print(f"::notice::Discovered partitions: {partition_ids}")
 
     print(f"Consuming from custom endpoint for {duration_seconds}s (lookback {lookback_minutes}m), forwarding to EH-target...")
 
-    def stop_after_duration():
-        time.sleep(duration_seconds)
-        print("Duration elapsed, closing consumer...")
-        consumer.close()
+    # Fabric's custom endpoint rejects CBS auth when multiple partition receiver
+    # links authenticate concurrently, so poll partitions sequentially - one
+    # connection/link open at a time - instead of all-at-once (default EventProcessor
+    # behavior, and even a thread-per-partition approach, both open links in parallel).
+    per_partition_seconds = 5
+    deadline = time.monotonic() + duration_seconds
+    round_num = 0
+    while time.monotonic() < deadline:
+        round_num += 1
+        for partition_id in partition_ids:
+            if time.monotonic() >= deadline:
+                break
+            partition_consumer = EventHubConsumerClient.from_connection_string(
+                source_connection_string, consumer_group=source_consumer_group
+            )
 
-    stopper = threading.Thread(target=stop_after_duration, daemon=True)
-    stopper.start()
+            def close_after(client=partition_consumer):
+                time.sleep(per_partition_seconds)
+                client.close()
 
-    try:
-        consumer.receive(
-            on_event=lambda partition_context, event: _on_event(producer, partition_context, event),
-            starting_position=starting_position,
-        )
-    except Exception as exc:  # noqa: BLE001 - consumer.close() during receive raises, that's expected
-        print(f"Consumer stopped: {exc}")
-    finally:
-        producer.close()
+            closer = threading.Thread(target=close_after, daemon=True)
+            closer.start()
+            try:
+                with partition_consumer:
+                    partition_consumer.receive(
+                        on_event=lambda partition_context, event: _on_event(producer, partition_context, event),
+                        partition_id=partition_id,
+                        starting_position=starting_position,
+                        max_wait_time=3,
+                    )
+            except Exception as exc:  # noqa: BLE001 - close() during receive raises, that's expected
+                print(f"::notice::[round {round_num}] Partition {partition_id} consumer stopped: {exc}")
+
+    producer.close()
 
     print(f"Done. Forwarded {forwarded_count} event(s) to EH-target.")
 
