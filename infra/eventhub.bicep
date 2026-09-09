@@ -1,18 +1,15 @@
 // Provisions the Azure Event Hub namespace + entity for the energy telemetry demo.
+// EH-target only: EH-source was retired once the generator started publishing solely
+// via the Fabric generator-source Custom Endpoint. Deployed in westus to co-locate
+// with the Fabric capacity and cut cross-region latency for the spike forwarder.
 @description('Azure region for the Event Hub namespace')
-param location string = resourceGroup().location
+param location string = 'westus'
 
 @description('Globally-unique Event Hub namespace name')
-param namespaceName string = 'ehns-test-se-stream2eh-${uniqueString(resourceGroup().id)}'
-
-@description('Event Hub entity name (the "hub" producers send to / consumers read from)')
-param eventHubName string = 'EH-source'
+param namespaceName string = 'ehns-se-stream2eh-west-${uniqueString(resourceGroup().id)}'
 
 @description('Event Hub entity name for filtered/processed messages sent out from the Eventstream')
 param targetEventHubName string = 'EH-target'
-
-@description('Consumer group name dedicated to the Fabric Eventstream reader')
-param fabricConsumerGroupName string = 'fabric-eventstream-cg'
 
 resource eventHubNamespace 'Microsoft.EventHub/namespaces@2024-01-01' = {
   name: namespaceName
@@ -24,22 +21,8 @@ resource eventHubNamespace 'Microsoft.EventHub/namespaces@2024-01-01' = {
   }
   properties: {
     isAutoInflateEnabled: false
-    disableLocalAuth: false
+    disableLocalAuth: true // enforced by org policy regardless; producers/consumers authenticate via Azure AD
   }
-}
-
-resource eventHub 'Microsoft.EventHub/namespaces/eventhubs@2024-01-01' = {
-  parent: eventHubNamespace
-  name: eventHubName
-  properties: {
-    messageRetentionInDays: 1
-    partitionCount: 2
-  }
-}
-
-resource fabricConsumerGroup 'Microsoft.EventHub/namespaces/eventhubs/consumergroups@2024-01-01' = {
-  parent: eventHub
-  name: fabricConsumerGroupName
 }
 
 resource targetEventHub 'Microsoft.EventHub/namespaces/eventhubs@2024-01-01' = {
@@ -63,6 +46,4 @@ resource targetEventHubSendRule 'Microsoft.EventHub/namespaces/eventhubs/authori
 
 output namespaceName string = eventHubNamespace.name
 output namespaceHostName string = '${eventHubNamespace.name}.servicebus.windows.net'
-output eventHubName string = eventHub.name
 output targetEventHubName string = targetEventHub.name
-output fabricConsumerGroupName string = fabricConsumerGroup.name

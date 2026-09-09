@@ -1,20 +1,21 @@
 // Provisions an Azure Container Apps environment running spike-forwarder continuously,
 // as an always-on alternative to the GitHub Actions-triggered spike-forwarder workflow.
-// Both can run side by side for latency comparison.
+// Deployed in westus to co-locate with the Fabric capacity and the westus EH-target
+// namespace, cutting cross-region latency.
 @description('Azure region for all resources')
-param location string = resourceGroup().location
+param location string = 'westus'
 
 @description('Globally-unique Azure Container Registry name (alphanumeric only)')
-param acrName string = 'acrsestream2eh${uniqueString(resourceGroup().id)}'
+param acrName string = 'acrsestream2ehwest${uniqueString(resourceGroup().id)}'
 
 @description('Log Analytics workspace name for the Container Apps environment')
-param logAnalyticsName string = 'log-se-stream2eh'
+param logAnalyticsName string = 'log-se-stream2eh-west'
 
 @description('Container Apps environment name')
-param containerAppsEnvName string = 'cae-se-stream2eh'
+param containerAppsEnvName string = 'cae-se-stream2eh-west'
 
 @description('Container App name for the always-on spike forwarder')
-param containerAppName string = 'ca-spike-forwarder'
+param containerAppName string = 'ca-spike-forwarder-west'
 
 @description('Container image to run (updated after az acr build pushes a new tag)')
 param containerImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
@@ -101,8 +102,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'spike-forwarder'
           image: containerImage
           resources: {
-            cpu: json('0.25')
-            memory: '0.5Gi'
+            cpu: json('0.5')
+            memory: '1Gi'
           }
           env: [
             {
