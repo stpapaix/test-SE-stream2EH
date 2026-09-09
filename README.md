@@ -201,4 +201,100 @@ exposed. **Never paste live connection strings into chat or commit them to the r
   granted the **Azure Event Hubs Data Sender** (or Receiver, as applicable) RBAC role
   scoped to the `eh-target` entity, since it cannot use a connection string/SAS key.
 
+## Deploying from zero
+
+This walks through standing up the whole demo in a fresh Azure subscription /
+resource group / Fabric workspace, in the order things actually depend on each other.
+
+1. **Prerequisites**
+   - An Azure subscription + a resource group (the Bicep files default to resource
+     group name `test-SE-stream2EH` — either create one with that name, or override
+     `--resource-group` in the workflow files / your own `az deployment group create`
+     calls).
+   - A Microsoft Fabric workspace with an available capacity (F-SKU or trial capacity).
+   - A GitHub repo (a fork/clone of this one) with Actions enabled.
+   - An Entra ID app registration + federated credential (OIDC) for GitHub Actions to
+     log into Azure without secrets, with `vars.AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+     `AZURE_SUBSCRIPTION_ID` set as **repository variables**, and that service
+     principal granted `Contributor` (or narrower) on the resource group.
+   - `az login` locally (your own account) for the manual RBAC-granting steps below.
+
+2. **Fabric one-time setup** (manual, via the Fabric portal — the `fabric-*.yml`
+   workflows in this repo are historical/reference for how it was originally wired,
+   not a turnkey provisioning path):
+   - Create an Eventhouse (e.g. `db4ehab`) with a table for `EnergyTelemetry`.
+   - Create an Eventstream (e.g. `stream4ehab`).
+   - Add a **Custom Endpoint source** (`generator-source`, Event Hub protocol, SAS
+     auth) as the Eventstream's input.
+   - Route the `DefaultStream` to the Eventhouse table.
+   - Add a **Filter operator** (`voltage_spike_filter`, condition `voltageV >= 240`)
+     on the `DefaultStream`, producing a `DerivedStream`.
+   - Add a **Custom Endpoint destination** (`voltage-spike-endpoint`, Kafka + Event
+     Hub protocols, SAS auth) fed by the `DerivedStream`.
+   - From the Fabric portal, copy the **connection string/key** for both Custom
+     Endpoints (source and destination) — these are only ever available from the
+     portal UI, there's no API to fetch them.
+
+3. **Set GitHub repository secrets** (Settings → Secrets and variables → Actions),
+   using the values copied in step 2 and from Azure once step 4 exists — see the
+   [GitHub secrets/variables required](#github-secretsvariables-required) table above
+   for exactly which workflow consumes which secret. At minimum, set
+   `GENERATOR_SOURCE_CONNECTION_STRING` and `FABRIC_ENDPOINT_CONNECTION_STRING` now;
+   `EHTARGET_SEND_CONNECTION_STRING` comes after step 4.
+
+4. **Deploy the Event Hub** — push to `main` touching `infra/**` (auto-triggers
+   [deploy-infra.yml](.github/workflows/deploy-infra.yml)), or run it manually via
+   `workflow_dispatch`. This provisions the Event Hub namespace + `EH-target` entity
+   from [infra/eventhub.bicep](infra/eventhub.bicep) (`disableLocalAuth: true`).
+   Then, from the Azure portal or CLI, fetch `EH-target`'s `fabric-send-policy`
+   connection string (used only to parse the FQDN/entity name, not for real auth —
+   see the latency section above) and set it as the `EHTARGET_SEND_CONNECTION_STRING`
+   GitHub secret.
+
+5. **Deploy the forwarder infrastructure** — manually run
+   [deploy-container-forwarder.yml](.github/workflows/deploy-container-forwarder.yml)
+   (`workflow_dispatch`). This provisions the ACR, Log Analytics workspace, Container
+   Apps environment, and the `ca-spike-forwarder` Container App (with a
+   system-assigned managed identity) from
+   [infra/containerapp-forwarder.bicep](infra/containerapp-forwarder.bicep).
+
+6. **Grant RBAC on `EH-target`** (required because of `disableLocalAuth=true` —
+   run these with your own `az login` session):
+   ```powershell
+   # Container App's managed identity -> can send to EH-target
+   az role assignment create --assignee-object-id <containerAppPrincipalId> \
+     --assignee-principal-type ServicePrincipal --role "Azure Event Hubs Data Sender" \
+     --scope <eh-target-resource-id>
+
+   # GitHub Actions deploying service principal -> can send (needed if it ever tests/validates)
+   az role assignment create --assignee-object-id <githubActionsSpObjectId> \
+     --assignee-principal-type ServicePrincipal --role "Azure Event Hubs Data Sender" \
+     --scope <eh-target-resource-id>
+
+   # Your own account -> can read, for read_ehtarget.py
+   az role assignment create --assignee-object-id <yourObjectId> \
+     --assignee-principal-type User --role "Azure Event Hubs Data Receiver" \
+     --scope <eh-target-resource-id>
+   ```
+   Get `<containerAppPrincipalId>` from the `containerAppPrincipalId` output of step 5's
+   deployment, and `<eh-target-resource-id>` from the Event Hub entity's resource ID
+   (`.../namespaces/<namespace>/eventhubs/EH-target`).
+
+7. **Re-run `deploy-container-forwarder.yml`** if `EHTARGET_SEND_CONNECTION_STRING`
+   was updated *after* the first run in step 5 — the Container App bakes that secret
+   in at deploy time, so a stale value means the forwarder parses the wrong
+   namespace/entity until redeployed.
+
+8. **Verify end-to-end**: manually trigger
+   [demoehab.yml](.github/workflows/demoehab.yml) to generate simulated traffic, then
+   run `python read_ehtarget.py` locally (after `az login` and step 6's Data Receiver
+   grant) to confirm voltage-spike events arrive in `EH-target` with the expected
+   sub-second latency (see "Measuring end-to-end latency" above).
+
+9. **Optional**: for future code-only changes to the forwarder (no infra changes),
+   use [update-container-forwarder.yml](.github/workflows/update-container-forwarder.yml)
+   instead of re-running the full Bicep deploy — it's faster but does **not** refresh
+   the Container App's secrets, so use the full `deploy-container-forwarder.yml` if
+   any connection string changed.
+
 
