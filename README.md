@@ -3,10 +3,7 @@ Test RTI Streaming to external Azure Event Hub
 
 ## Demo video
 
-📹 [Watch the demo video](media/demo_eventstream2eventhub.mp4) — clicking opens GitHub's
-built-in file viewer with an inline video player (GitHub strips `<video>` tags embedded
-directly in Markdown unless uploaded via drag-and-drop, so a plain link is the reliable
-way to surface a video committed to the repo).
+https://github.com/user-attachments/assets/d8870ddc-ed7e-4f44-be11-d5df82143ada
 
 ## Industrial use case
 
