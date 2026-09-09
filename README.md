@@ -1,6 +1,13 @@
 # test-SE-stream2EH
 Test RTI Streaming to external Azure Event Hub
 
+## Demo video
+
+<video src="media/demo_eventstream2eventhub.mp4" controls width="800">
+  Your browser does not support inline video playback.
+  Watch it directly: <a href="media/demo_eventstream2eventhub.mp4">media/demo_eventstream2eventhub.mp4</a>
+</video>
+
 ## Industrial use case
 
 Utilities and grid operators increasingly rely on Microsoft Fabric Real-Time
