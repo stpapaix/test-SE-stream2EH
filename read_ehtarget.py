@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from azure.eventhub import EventHubConsumerClient
 from azure.identity import AzureCliCredential, ChainedTokenCredential, DefaultAzureCredential
 
-NAMESPACE = "ehns-test-se-stream2eh-srzfa5vvnklsy.servicebus.windows.net"
+NAMESPACE = "ehns-se-stream2eh-west-srzfa5vvnklsy.servicebus.windows.net"
 EVENTHUB_NAME = "EH-target"
 CONSUMER_GROUP = "$Default"
 DURATION_SECONDS = 600  # 10 minutes
