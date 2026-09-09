@@ -10,14 +10,14 @@ on the EH-target entity (or namespace) for your account.
 """Read JSON messages from Azure Event Hub EH-target.
 
 Usage:
-    python read_ehtarget.py
+    python read_ehtarget.py [duration_seconds]
 
 Auth: uses your local `az login` session (AzureCliCredential), falling back
 to DefaultAzureCredential. Requires "Azure Event Hubs Data Receiver" role
 on the EH-target entity (or namespace) for your account.
 
 Behavior:
-- Listens continuously for DURATION_SECONDS (default 10 minutes), printing
+- Listens for duration_seconds (default 600s / 10 minutes if omitted), printing
   each message as it arrives.
 - Remembers the last sequence number read per partition in a local checkpoint
   file (read_ehtarget_checkpoint.json), so messages already shown won't be
@@ -27,6 +27,7 @@ Behavior:
 """
 import json
 import os
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -37,7 +38,15 @@ from azure.identity import AzureCliCredential, ChainedTokenCredential, DefaultAz
 NAMESPACE = "ehns-se-stream2eh-west-srzfa5vvnklsy.servicebus.windows.net"
 EVENTHUB_NAME = "EH-target"
 CONSUMER_GROUP = "$Default"
-DURATION_SECONDS = 600  # 10 minutes
+DEFAULT_DURATION_SECONDS = 600  # 10 minutes
+if len(sys.argv) > 1:
+    DURATION_SECONDS = int(sys.argv[1])
+else:
+    DURATION_SECONDS = DEFAULT_DURATION_SECONDS
+    print(
+        f"No duration argument provided, using default of {DEFAULT_DURATION_SECONDS}s "
+        f"(usage: python read_ehtarget.py <duration_seconds>)"
+    )
 CHECKPOINT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "read_ehtarget_checkpoint.json")
 
 credential = ChainedTokenCredential(AzureCliCredential(), DefaultAzureCredential())
@@ -50,6 +59,7 @@ client = EventHubConsumerClient(
 
 total = 0
 last_seen = {}  # partition_id -> last sequence_number read this run
+latencies = []  # seconds, one entry per reading where latency could be computed
 
 
 def _load_checkpoint() -> dict:
@@ -111,7 +121,9 @@ def on_event_batch(partition_context, event_batch):
                 enqueued_at = event.enqueued_time
                 if enqueued_at.tzinfo is None:
                     enqueued_at = enqueued_at.replace(tzinfo=timezone.utc)
-                latency_str = f"{(enqueued_at - spike_detected_at).total_seconds():.2f}s"
+                latency_seconds = (enqueued_at - spike_detected_at).total_seconds()
+                latencies.append(latency_seconds)
+                latency_str = f"{latency_seconds:.2f}s"
             print(
                 f"[{partition_context.partition_id}] deviceId={device_id} voltageV={voltage_v} "
                 f"latency(filter->EH-target)={latency_str}",
@@ -151,6 +163,18 @@ checkpoint.update(last_seen)
 _save_checkpoint(checkpoint)
 
 print(f"\nTotal messages read this run: {total}")
+WARMUP_READINGS = 10
+stable_latencies = latencies[WARMUP_READINGS:]
+if stable_latencies:
+    print(
+        f"Average latency(filter->EH-target) this run: {sum(stable_latencies) / len(stable_latencies):.2f}s "
+        f"over {len(stable_latencies)} reading(s) (first {WARMUP_READINGS} excluded as warmup)"
+    )
+else:
+    print(
+        f"Average latency(filter->EH-target) this run: n/a "
+        f"(only {len(latencies)} readings with computable latency, need more than {WARMUP_READINGS} to exclude warmup)"
+    )
 print(f"Checkpoint saved to {CHECKPOINT_FILE}: {checkpoint}")
 
 
